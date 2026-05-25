@@ -168,30 +168,30 @@ Metric names are CUPTI/PerfWorks names and vary by GPU architecture and CUPTI re
 
 ## Communication And Sync Examples
 
-PM sampling does not trace CUDA/NCCL synchronization APIs directly. Infer waits from SM/Tensor idle gaps, peer GPUs staying busy, and NVLink/PCIe bursts. Use Nsight Systems when you need exact CUDA/NCCL API attribution.
+PM sampling does not trace CUDA/NCCL synchronization APIs directly. Infer waits from SM/Tensor idle gaps, peer GPUs staying busy, and fabric or PCIe bursts. Use Nsight Systems when you need exact CUDA/NCCL API attribution.
 
-Tensor-parallel or data-parallel transmit traffic, often all-reduce/reduce-scatter:
-
-```bash
-./cufall --metric nvltx__throughput.avg.pct_of_peak_sustained_elapsed --no-denominator --full-scale 100
-```
-
-Tensor-parallel all-gather receive traffic or expert-parallel all-to-all receive:
+Pipeline/data/expert-parallel bubbles or explicit sync waits across GPUs:
 
 ```bash
-./cufall --metric nvlrx__throughput.avg.pct_of_peak_sustained_elapsed --no-denominator --full-scale 100
+./cufall --devices all --metric sm__cycles_active.avg --denominator gr__cycles_elapsed.max --width 16
 ```
 
-PCIe/off-node staging pressure, useful when IB/NIC traffic lands through PCIe:
+PCIe/off-node staging pressure, useful when NIC traffic lands through PCIe:
 
 ```bash
 ./cufall --metric pcie__throughput.avg.pct_of_peak_sustained_elapsed --no-denominator --full-scale 100
 ```
 
-Pipeline-parallel bubbles, scheduler stalls, or explicit sync waits:
+PCIe ingress bytes/s, tune `--full-scale` to expected link bandwidth:
 
 ```bash
-./cufall --devices all --metric sm__cycles_active.avg --denominator gr__cycles_elapsed.max --width 16
+./cufall --metric pcie__read_bytes.sum.per_second --no-denominator --full-scale 64000000000
+```
+
+PCIe egress bytes/s, tune `--full-scale` to expected link bandwidth:
+
+```bash
+./cufall --metric pcie__write_bytes.sum.per_second --no-denominator --full-scale 64000000000
 ```
 
 Decode/KV-cache memory pressure, common when Tensor Cores are not saturated:
@@ -199,6 +199,8 @@ Decode/KV-cache memory pressure, common when Tensor Cores are not saturated:
 ```bash
 ./cufall --metric dram__throughput.avg.pct_of_peak_sustained_elapsed --no-denominator --full-scale 100
 ```
+
+NVLink-only systems may also expose `nvlrx__...` and `nvltx__...` metrics. Systems without NVLink reject those metric names during startup.
 
 ## LLM Metric Cheat Sheet
 
@@ -232,14 +234,15 @@ Use `.pct_of_peak...` metrics with `--no-denominator --full-scale 100`. Use acti
 | 24 | `lts__t_sectors_op_read.sum` | L2 read sectors |
 | 25 | `lts__t_sectors_op_write.sum` | L2 write sectors |
 | 26 | `l1tex__throughput.avg.pct_of_peak_sustained_elapsed` | L1/TEX/shared-memory pressure |
-| 27 | `nvlrx__bytes.sum` | NVLink receive bytes, TP/EP/DP comm |
-| 28 | `nvltx__bytes.sum` | NVLink transmit bytes, TP/EP/DP comm |
-| 29 | `nvlrx__throughput.avg.pct_of_peak_sustained_elapsed` | NVLink RX saturation |
-| 30 | `nvltx__throughput.avg.pct_of_peak_sustained_elapsed` | NVLink TX saturation |
+| 27 | `pcie__throughput.avg.pct_of_peak_sustained_elapsed` | PCIe/NIC staging pressure |
+| 28 | `pcie__read_bytes.sum.per_second` | PCIe ingress bandwidth |
+| 29 | `pcie__write_bytes.sum.per_second` | PCIe egress bandwidth |
+| 30 | `pcie__throughput.avg.pct_of_peak_sustained_active` | PCIe active-cycle saturation |
 
 ## Troubleshooting
 
 - CUPTI PM sampling requires NVIDIA performance-counter permission. If restricted, run with sufficient privileges or allow non-admin profiling in the driver settings.
+- Metric names tied to absent hardware are rejected at startup. For example, `nvlrx__...` and `nvltx__...` are invalid on GPUs/systems without NVLink.
 - `cuptiProfilerDeviceSupported()` is treated as a best-effort preflight check. Some CUPTI builds reject that query with `CUPTI_ERROR_INVALID_PARAMETER`, so the tool warns and lets the real PM sampling setup decide support.
 - `--trigger time` uses nanosecond sampling intervals and is the default. Use `--trigger sysclk --sysclk-cycles N` if fixed-time triggering is unsupported on the target GPU.
 - If warnings say the sampler loop is behind, increase `--frame-us`, reduce `--devices` or `--width`, use `--no-flush`, or increase `--buffer-samples` and `--hw-buffer-mb`.

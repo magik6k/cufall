@@ -187,22 +187,25 @@ void usage(const char* argv0) {
         << "\n"
         << "communication/sync examples:\n"
         << "  PM sampling does not trace CUDA/NCCL sync APIs directly. Infer waits from\n"
-        << "  SM/Tensor idle gaps, peer GPUs staying busy, and NVLink/PCIe bursts.\n"
+        << "  SM/Tensor idle gaps, peer GPUs staying busy, and fabric/PCIe bursts.\n"
         << "\n"
-        << "  Tensor-parallel or data-parallel TX traffic, often all-reduce/reduce-scatter:\n"
-        << "    " << argv0 << " --metric nvltx__throughput.avg.pct_of_peak_sustained_elapsed --no-denominator --full-scale 100\n"
+        << "  Pipeline/data/expert-parallel bubbles or explicit sync waits across GPUs:\n"
+        << "    " << argv0 << " --devices all --metric sm__cycles_active.avg --denominator gr__cycles_elapsed.max --width 16\n"
         << "\n"
-        << "  Tensor-parallel all-gather/RX traffic or expert-parallel all-to-all receive:\n"
-        << "    " << argv0 << " --metric nvlrx__throughput.avg.pct_of_peak_sustained_elapsed --no-denominator --full-scale 100\n"
-        << "\n"
-        << "  PCIe/off-node staging pressure, useful when IB/NIC traffic lands through PCIe:\n"
+        << "  PCIe/off-node staging pressure, useful when NIC traffic lands through PCIe:\n"
         << "    " << argv0 << " --metric pcie__throughput.avg.pct_of_peak_sustained_elapsed --no-denominator --full-scale 100\n"
         << "\n"
-        << "  Pipeline-parallel bubbles, scheduler stalls, or explicit sync waits:\n"
-        << "    " << argv0 << " --devices all --metric sm__cycles_active.avg --denominator gr__cycles_elapsed.max --width 16\n"
+        << "  PCIe ingress bytes/s, tune full-scale to expected link bandwidth:\n"
+        << "    " << argv0 << " --metric pcie__read_bytes.sum.per_second --no-denominator --full-scale 64000000000\n"
+        << "\n"
+        << "  PCIe egress bytes/s, tune full-scale to expected link bandwidth:\n"
+        << "    " << argv0 << " --metric pcie__write_bytes.sum.per_second --no-denominator --full-scale 64000000000\n"
         << "\n"
         << "  Decode/KV-cache memory pressure, common when Tensor Cores are not saturated:\n"
         << "    " << argv0 << " --metric dram__throughput.avg.pct_of_peak_sustained_elapsed --no-denominator --full-scale 100\n"
+        << "\n"
+        << "  NVLink-only systems may also expose nvlrx__/nvltx__ metrics. Systems without\n"
+        << "  NVLink reject those metric names during startup.\n"
         << "\n"
         << "top 30 LLM metrics to try:\n"
         << "  Use .pct_of_peak... metrics with --no-denominator --full-scale 100.\n"
@@ -233,10 +236,10 @@ void usage(const char* argv0) {
         << "  24. lts__t_sectors_op_read.sum                         L2 read sectors\n"
         << "  25. lts__t_sectors_op_write.sum                        L2 write sectors\n"
         << "  26. l1tex__throughput.avg.pct_of_peak_sustained_elapsed L1/TEX/shared-memory pressure\n"
-        << "  27. nvlrx__bytes.sum                                   NVLink receive bytes, TP/EP/DP comm\n"
-        << "  28. nvltx__bytes.sum                                   NVLink transmit bytes, TP/EP/DP comm\n"
-        << "  29. nvlrx__throughput.avg.pct_of_peak_sustained_elapsed NVLink RX saturation\n"
-        << "  30. nvltx__throughput.avg.pct_of_peak_sustained_elapsed NVLink TX saturation\n";
+        << "  27. pcie__throughput.avg.pct_of_peak_sustained_elapsed PCIe/NIC staging pressure\n"
+        << "  28. pcie__read_bytes.sum.per_second                    PCIe ingress bandwidth\n"
+        << "  29. pcie__write_bytes.sum.per_second                   PCIe egress bandwidth\n"
+        << "  30. pcie__throughput.avg.pct_of_peak_sustained_active  PCIe active-cycle saturation\n";
 }
 
 Options parseOptions(int argc, char** argv) {
@@ -522,6 +525,17 @@ double normalizeActivity(double value, const Options& opts, bool ratioMode) {
     return std::max(0.0, std::min(1.0, value));
 }
 
+std::string joinMetricNames(const std::vector<std::string>& metrics) {
+    std::ostringstream out;
+    for (size_t i = 0; i < metrics.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << metrics[i];
+    }
+    return out.str();
+}
+
 struct GpuSampler {
     int index = 0;
     CUdevice device = 0;
@@ -652,7 +666,17 @@ struct GpuSampler {
         add.pHostObject = host;
         add.ppMetricNames = metricNames.data();
         add.numMetrics = metricNames.size();
-        checkCupti(cuptiProfilerHostConfigAddMetrics(&add), "cuptiProfilerHostConfigAddMetrics");
+        const CUptiResult addResult = cuptiProfilerHostConfigAddMetrics(&add);
+        if (addResult != CUPTI_SUCCESS) {
+            std::ostringstream out;
+            out << "cuptiProfilerHostConfigAddMetrics failed for metric"
+                << (metricStorage.size() == 1 ? " " : "s ") << joinMetricNames(metricStorage)
+                << ": " << cuptiError(addResult)
+                << ". The metric may be unavailable on chip " << chipName
+                << ", unsupported by runtime CUPTI " << g_cuptiRuntimeVersion
+                << ", or tied to hardware that is not present, such as NVLink.";
+            throw std::runtime_error(out.str());
+        }
 
         CUpti_Profiler_Host_GetConfigImageSize_Params size{};
         size.structSize = CUpti_Profiler_Host_GetConfigImageSize_Params_STRUCT_SIZE;
@@ -674,7 +698,8 @@ struct GpuSampler {
         checkCupti(cuptiProfilerHostGetNumOfPasses(&passes), "cuptiProfilerHostGetNumOfPasses");
         if (passes.numOfPasses != 1) {
             std::ostringstream out;
-            out << "metric set requires " << passes.numOfPasses << " passes; PM sampling needs one pass";
+            out << "metric set " << joinMetricNames(metricStorage) << " requires "
+                << passes.numOfPasses << " passes; PM sampling needs one pass";
             throw std::runtime_error(out.str());
         }
     }
