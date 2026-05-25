@@ -1,0 +1,28 @@
+# Build outputs
+cufall
+cupti-braille
+*.o
+*.d
+*.a
+*.so
+*.so.*
+
+# Local build directories
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+
+# Local/editor state
+.cache/
+.vscode/
+.idea/
+demo
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
