@@ -459,6 +459,37 @@ std::string formatTimestamp(std::chrono::system_clock::time_point now) {
     return out.str();
 }
 
+std::string formatThreeSig(double value) {
+    if (!std::isfinite(value) || value < 0.0) {
+        value = 0.0;
+    }
+
+    auto rounded = [](double v, int precision) {
+        const double scale = std::pow(10.0, precision);
+        return std::round(v * scale) / scale;
+    };
+
+    int precision = 0;
+    if (value < 10.0 && rounded(value, 2) < 10.0) {
+        precision = 2;
+    } else if (value < 100.0 && rounded(value, 1) < 100.0) {
+        precision = 1;
+    }
+
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(precision) << value;
+    return out.str();
+}
+
+std::string formatRowTiming(double lineUs, size_t gpuCount, int width) {
+    const double dots = static_cast<double>(std::max<size_t>(1, gpuCount)) *
+        static_cast<double>(std::max(1, width)) * 8.0;
+    std::ostringstream out;
+    out << formatThreeSig(lineUs / dots) << "us/d "
+        << formatThreeSig(lineUs / 1000.0) << "ms/l";
+    return out.str();
+}
+
 std::string renderBraille(double activity, int width, bool color) {
     if (!std::isfinite(activity) || activity < 0.0) {
         activity = 0.0;
@@ -929,13 +960,17 @@ int main(int argc, char** argv) {
         uint64_t lagEventsSinceWarning = 0;
         uint64_t missedFrameSlotsSinceWarning = 0;
         uint64_t peakLagUsSinceWarning = 0;
+        auto previousLine = started;
         while (!g_stop.load(std::memory_order_relaxed)) {
             std::this_thread::sleep_until(next);
             next += std::chrono::microseconds(opts.frameUs);
+            const auto lineStarted = std::chrono::steady_clock::now();
+            const double lineUs = static_cast<double>(
+                std::chrono::duration_cast<std::chrono::microseconds>(lineStarted - previousLine).count());
+            previousLine = lineStarted;
 
             if (opts.durationSec > 0.0) {
-                const auto now = std::chrono::steady_clock::now();
-                const double elapsed = std::chrono::duration<double>(now - started).count();
+                const double elapsed = std::chrono::duration<double>(lineStarted - started).count();
                 if (elapsed >= opts.durationSec) {
                     break;
                 }
@@ -959,6 +994,8 @@ int main(int argc, char** argv) {
                 }
                 line += renderBraille(activity, opts.width, opts.color);
             }
+            line.push_back(' ');
+            line += formatRowTiming(lineUs, samplers.size(), opts.width);
             std::cout << line << '\n';
             if (opts.flush) {
                 std::cout.flush();

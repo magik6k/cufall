@@ -95,10 +95,12 @@ Show all CLI options and embedded metric examples:
 Each output row starts with a local timestamp, then one band per GPU:
 
 ```text
-23:26:27.507739 g0(  5%) ... g1(  4%) ... g2( 31%) ...
+23:26:27.507739 g0(  5%) ... g1(  4%) ... g2( 31%) ... 10.3us/d 31.3ms/l
 ```
 
 The percentage in `gN( XX%)` is the current output row's average normalized value for that GPU. The Braille band fills left-to-right and bottom-to-top within each cell. Blank Braille cells are U+2800, so fully idle bands can look like whitespace.
+
+The timing suffix shows actual row cadence: microseconds per rendered Braille dot across the whole row (`us/d`) and milliseconds per emitted line (`ms/l`). It is based on the observed interval between output rows, so it moves when the sampler falls behind or the terminal/output path stalls.
 
 Without `--color`, no ANSI color sequences are emitted. With `--color`, only non-blank Braille cells are colored and the renderer only emits a new color sequence when the next cell's utilization bucket changes.
 
