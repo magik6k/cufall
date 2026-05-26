@@ -14,6 +14,10 @@ Default multi-GPU activity view.
 
 Pipeline-parallel style activity with staggered utilization across GPUs.
 
+![Expert-parallel SM usage view](doc/ep_sm_usage.png)
+
+Expert-parallel SM usage with uneven work distribution across GPUs.
+
 ## Features
 
 - CUPTI PM Sampling based, not NVML polling.
